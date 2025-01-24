@@ -111,27 +111,37 @@ def visualize_post_prediction(df):
 
 # Application Streamlit
 st.title("Analyse et Prédiction de l'Attrition des Employés")
+
+# Charger le fichier par défaut
+default_file = "employee_data.csv"
+
+# Permettre à l'utilisateur de télécharger un fichier CSV
 uploaded_file = st.file_uploader("Téléchargez un fichier CSV contenant les données des employés", type=["csv"])
 
-if uploaded_file:
-    # Charger les données
+# Charger les données
+if uploaded_file is not None:
+    # Utiliser le fichier téléchargé
     df = load_data(uploaded_file)
-    if df is not None:
-        # Charger les modèles et les noms des colonnes
-        xgb_model, encoder, scaler = load_pretrained_models()
-        with open('column_names.json', 'r') as f:
-            column_names = json.load(f)
+else:
+    # Utiliser le fichier par défaut
+    df = load_data(default_file)
 
-        if xgb_model and encoder and scaler:
-            # Prétraitement
-            X = preprocess_data(df, encoder, scaler, column_names)
-            if X is not None:
-                # Prédictions
-                df['Prédiction XGBoost'] = make_predictions(xgb_model, X)
+if df is not None:
+    # Charger les modèles et les noms des colonnes
+    xgb_model, encoder, scaler = load_pretrained_models()
+    with open('column_names.json', 'r') as f:
+        column_names = json.load(f)
 
-                # Affichage des résultats
-                st.write("### Résultats des Prédictions")
-                st.dataframe(df[["Attrition", "Prédiction XGBoost"]].head(20))
+    if xgb_model and encoder and scaler:
+        # Prétraitement
+        X = preprocess_data(df, encoder, scaler, column_names)
+        if X is not None:
+            # Prédictions
+            df['Prédiction XGBoost'] = make_predictions(xgb_model, X)
 
-                # Visualisations et statistiques après prédiction
-                visualize_post_prediction(df)
+            # Affichage des résultats
+            st.write("### Résultats des Prédictions")
+            st.dataframe(df[["Attrition", "Prédiction XGBoost"]].head(20))
+
+            # Visualisations et statistiques après prédiction
+            visualize_post_prediction(df)
