@@ -1,142 +1,137 @@
-import streamlit as st
-import joblib
-import numpy as np
 import pandas as pd
+import seaborn as sns
+import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc
+import streamlit as st
+from joblib import load
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
+from xgboost import XGBClassifier
+import json
 
-# Charger le modèle et l'encodeur
-model_path = "model_logistique.joblib"  # Chemin vers le modèle sauvegardé
-encoder_path = "onehot_encoder.joblib"  # Chemin vers l'encodeur sauvegardé
-model = joblib.load(model_path)
-encoder = joblib.load(encoder_path)
+# Charger les modèles et transformations sauvegardés
+def load_pretrained_models():
+    """Charge les modèles pré-entraînés et les encodeurs."""
+    try:
+        xgb_model = load("lgbm_model.joblib")
+        encoder = load("onehot_encoder.joblib")
+        scaler = load("scaler.joblib")  # Utiliser le scaler sauvegardé
+        return xgb_model, encoder, scaler
+    except Exception as e:
+        st.error(f"Erreur lors du chargement des modèles: {e}")
+        return None, None, None
 
-# Titre de l'application
-st.title("Prédiction d'Attrition des Employés")
-st.write("Cette application prédit si un employé est susceptible de quitter l'entreprise.")
+# Charger les données
+def load_data(filepath):
+    """Charge le fichier CSV dans un DataFrame."""
+    try:
+        return pd.read_csv(filepath)
+    except Exception as e:
+        st.error(f"Erreur lors du chargement des données: {e}")
+        return None
 
-# Formulaire d'entrée des données utilisateur
-st.header("Entrez les caractéristiques de l'employé :")
+# Prétraitement des données
+def preprocess_data(df, encoder, scaler, column_names):
+    """Prétraite les données pour les prédictions."""
+    try:
+        # Supprimer les colonnes inutiles
+        df = df.drop(['EmployeeCount', 'StandardHours', 'Over18', 'EmployeeNumber'], axis=1, errors='ignore')
 
-# Collecte des données utilisateur
-age = st.slider("Âge", min_value=18, max_value=65, value=30)
-travel = st.selectbox("Fréquence des déplacements professionnels", ["Travel_Rarely", "Travel_Frequently", "Non-Travel"])
-daily_rate = st.number_input("Taux journalier", min_value=100, max_value=1500, value=800)
-department = st.selectbox("Département", ["Sales", "Research & Development", "Human Resources"])
-distance_from_home = st.slider("Distance du domicile (km)", min_value=1, max_value=50, value=10)
-education = st.selectbox("Niveau d'éducation", [1, 2, 3, 4, 5])
-education_field = st.selectbox(
-    "Domaine d'étude",
-    ["Life Sciences", "Medical", "Marketing", "Technical Degree", "Human Resources", "Other"]
-)
-job_level = st.selectbox("Niveau du poste", [1, 2, 3, 4, 5])
-job_role = st.selectbox(
-    "Rôle de l'employé",
-    [
-        "Sales Executive", "Research Scientist", "Laboratory Technician", "Manufacturing Director",
-        "Healthcare Representative", "Manager", "Sales Representative", "Research Director", "Human Resources"
-    ]
-)
-overtime = st.selectbox("Heures supplémentaires", ["Yes", "No"])
-monthly_income = st.number_input("Revenu mensuel", min_value=1000, max_value=20000, value=5000)
-total_working_years = st.slider("Années totales de travail", min_value=0, max_value=40, value=10)
-years_at_company = st.slider("Années dans l'entreprise", min_value=0, max_value=40, value=5)
-years_in_current_role = st.slider("Années dans le rôle actuel", min_value=0, max_value=20, value=3)
+        # Vérifier que les colonnes catégoriques nécessaires sont présentes
+        required_categorical_columns = column_names['categorical_columns']
+        missing_categorical = [col for col in required_categorical_columns if col not in df.columns]
+        if missing_categorical:
+            raise ValueError(f"Colonnes catégoriques manquantes : {missing_categorical}")
 
-# Ajout des colonnes manquantes avec des valeurs par défaut
-gender = st.selectbox("Genre", ["Male", "Female"])
-marital_status = st.selectbox("Statut matrimonial", ["Single", "Married", "Divorced"])
+        # Vérifier que les colonnes numériques nécessaires sont présentes
+        required_numerical_columns = column_names['numerical_columns']
+        missing_numerical = [col for col in required_numerical_columns if col not in df.columns]
+        if missing_numerical:
+            raise ValueError(f"Colonnes numériques manquantes : {missing_numerical}")
 
-# Mapping des données d'entrée pour correspondre au dataset d'origine
-input_data = pd.DataFrame({
-    "Age": [age],
-    "BusinessTravel": [travel],
-    "DailyRate": [daily_rate],
-    "Department": [department],
-    "DistanceFromHome": [distance_from_home],
-    "Education": [education],
-    "EducationField": [education_field],
-    "JobLevel": [job_level],
-    "JobRole": [job_role],
-    "OverTime": [overtime],  # Cette colonne n'était pas incluse lors de l'entraînement
-    "MonthlyIncome": [monthly_income],
-    "TotalWorkingYears": [total_working_years],
-    "YearsAtCompany": [years_at_company],
-    "YearsInCurrentRole": [years_in_current_role],
-    "Gender": [gender],  # Colonne manquante ajoutée
-    "MaritalStatus": [marital_status],  # Colonne manquante ajoutée
-})
+        # Encodage des colonnes catégoriques
+        X_cat = df[required_categorical_columns]
+        X_cat_encoded = encoder.transform(X_cat)
 
-# Colonnes catégoriques utilisées lors de l'entraînement de l'encodeur
-# Exclure "OverTime" si elle n'était pas incluse lors de l'entraînement
-categorical_columns = ["BusinessTravel", "Department", "EducationField", "Gender", "JobRole", "MaritalStatus"]
+        # Colonnes numériques
+        X_numerical = df[required_numerical_columns]
 
-# Encodage des colonnes catégoriques
-encoded_data = encoder.transform(input_data[categorical_columns]).toarray()
+        # Normalisation
+        X_all = np.hstack([X_cat_encoded, scaler.transform(X_numerical)])
 
-# Créer un DataFrame pour les données encodées
-encoded_df = pd.DataFrame(encoded_data, columns=encoder.get_feature_names_out(categorical_columns))
+        return X_all
+    except Exception as e:
+        st.error(f"Erreur lors du prétraitement des données: {e}")
+        return None
 
-# Combiner les données numériques et les données encodées
-numeric_columns = ["Age", "DailyRate", "DistanceFromHome", "Education", "JobLevel", "MonthlyIncome", 
-                   "TotalWorkingYears", "YearsAtCompany", "YearsInCurrentRole"]
-final_input = pd.concat([input_data[numeric_columns].reset_index(drop=True), encoded_df], axis=1)
+# Fonction pour effectuer les prédictions
+def make_predictions(model, X):
+    """Effectue des prédictions avec le modèle chargé."""
+    return model.predict(X)
 
-# Ajouter la colonne "OverTime" encodée manuellement
-final_input["OverTime"] = input_data["OverTime"].map({"Yes": 1, "No": 0})
+# Visualisation des données après prédiction
+def visualize_post_prediction(df):
+    """Affiche des visualisations et des statistiques descriptives après la prédiction."""
+    st.write("### Analyse des Prédictions")
 
-# Liste des colonnes attendues par le modèle (à adapter selon votre modèle)
-expected_columns = [
-    "Age", "DailyRate", "DistanceFromHome", "Education", "JobLevel", "MonthlyIncome",
-    "TotalWorkingYears", "YearsAtCompany", "YearsInCurrentRole", "OverTime",
-    "BusinessTravel_Travel_Frequently", "BusinessTravel_Travel_Rarely",
-    "Department_Research & Development", "Department_Sales",
-    "EducationField_Life Sciences", "EducationField_Medical", "EducationField_Other",
-    "Gender_Female", "Gender_Male",
-    "JobRole_Healthcare Representative", "JobRole_Laboratory Technician", "JobRole_Manager",
-    "JobRole_Manufacturing Director", "JobRole_Research Director", "JobRole_Research Scientist",
-    "JobRole_Sales Executive", "JobRole_Sales Representative",
-    "MaritalStatus_Divorced", "MaritalStatus_Married", "MaritalStatus_Single"
-]
+    # Distribution des prédictions
+    st.write("#### Distribution des Prédictions")
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.countplot(x='Prédiction XGBoost', data=df, palette='viridis', ax=ax)
+    ax.set_title("Distribution des Prédictions (Attrition)")
+    st.pyplot(fig)
 
-# Ajouter les colonnes manquantes avec des valeurs par défaut
-missing_columns = set(expected_columns) - set(final_input.columns)
-for col in missing_columns:
-    final_input[col] = 0  # Valeur par défaut (vous pouvez ajuster selon vos besoins)
+    # Comparaison des prédictions avec la réalité (si 'Attrition' est disponible)
+    if 'Attrition' in df.columns:
+        st.write("#### Comparaison des Prédictions avec la Réalité")
+        df['Attrition'] = df['Attrition'].map({'Yes': 1, 'No': 0})
+        comparison = pd.crosstab(df['Attrition'], df['Prédiction XGBoost'], rownames=['Réalité'], colnames=['Prédiction'])
+        st.write(comparison)
 
-# Vérifier que l'ordre des colonnes correspond à celui utilisé lors de l'entraînement
-final_input = final_input[expected_columns]
+        # Matrice de confusion visuelle
+        fig, ax = plt.subplots(figsize=(8, 6))
+        sns.heatmap(comparison, annot=True, fmt='d', cmap='Blues', ax=ax)
+        ax.set_title("Matrice de Confusion")
+        st.pyplot(fig)
 
-# Prédiction
-if st.button("Prédire"):
-    prediction = model.predict(final_input)
-    prob = model.predict_proba(final_input)[0][1]
+    # Analyse des caractéristiques importantes
+    st.write("#### Importance des Caractéristiques")
+    feature_importance = xgb_model.feature_importances_
+    feature_names = column_names['encoded_columns'] + column_names['numerical_columns']
+    importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': feature_importance})
+    importance_df = importance_df.sort_values(by='Importance', ascending=False)
 
-    if prediction[0] == 1:
-        st.error(f"L'employé est susceptible de quitter l'entreprise avec une probabilité de {prob:.2f}.")
-    else:
-        st.success(f"L'employé est peu susceptible de quitter l'entreprise avec une probabilité de {prob:.2f}.")
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.barplot(x='Importance', y='Feature', data=importance_df.head(10), palette='magma', ax=ax)
+    ax.set_title("Top 10 des Caractéristiques les Plus Importantes")
+    st.pyplot(fig)
 
-# Section pour les visualisations
-st.header("Visualisations")
+    # Statistiques descriptives
+    st.write("#### Statistiques Descriptives")
+    st.write(df.describe())
 
-def plot_roc_curve():
-    st.subheader("Courbe ROC")
-    # Exemple de courbe ROC (remplacez par vos propres données de test)
-    y_test = np.random.randint(0, 2, 100)  # Remplacez par vos étiquettes réelles
-    y_proba = np.random.rand(100)          # Remplacez par vos probabilités prédites
+# Application Streamlit
+st.title("Analyse et Prédiction de l'Attrition des Employés")
+uploaded_file = st.file_uploader("Téléchargez un fichier CSV contenant les données des employés", type=["csv"])
 
-    fpr, tpr, _ = roc_curve(y_test, y_proba)
-    roc_auc = auc(fpr, tpr)
+if uploaded_file:
+    # Charger les données
+    df = load_data(uploaded_file)
+    if df is not None:
+        # Charger les modèles et les noms des colonnes
+        xgb_model, encoder, scaler = load_pretrained_models()
+        with open('column_names.json', 'r') as f:
+            column_names = json.load(f)
 
-    plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
-    plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
-    plt.xlabel("Taux de Faux Positifs")
-    plt.ylabel("Taux de Vrais Positifs")
-    plt.title("Courbe ROC")
-    plt.legend(loc="lower right")
-    st.pyplot(plt)
+        if xgb_model and encoder and scaler:
+            # Prétraitement
+            X = preprocess_data(df, encoder, scaler, column_names)
+            if X is not None:
+                # Prédictions
+                df['Prédiction XGBoost'] = make_predictions(xgb_model, X)
 
-if st.button("Afficher la courbe ROC"):
-    plot_roc_curve()
+                # Affichage des résultats
+                st.write("### Résultats des Prédictions")
+                st.dataframe(df[["Attrition", "Prédiction XGBoost"]].head(20))
+
+                # Visualisations et statistiques après prédiction
+                visualize_post_prediction(df)
